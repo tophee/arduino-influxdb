@@ -54,7 +54,7 @@ def ReadLoop(args, queue: persistent_queue.Queue):
             if serial_fn:
                 lines = serial_fn(handle)
             else:
-                lines = serial_samples.SerialLines(handle, args.max_line_length)
+                lines = serial_samples.SerialLines(handle, args.max_line_length, 10.0)
             for line in lines:
                 try:
                     line = str(line, encoding="UTF-8")
