@@ -19,6 +19,7 @@ missing).
 """
 
 import logging
+import time
 from typing import BinaryIO, Generator
 
 
@@ -45,9 +46,25 @@ class LineOverflowError(IOError):
                 line)
         super().__init__(message)
 
+
+def SerialLines(handle: BinaryIO,
+                max_line_length: int) -> Generator[bytes, None, None]:
+    """A generator that yields lines from a configured serial line.
+
+    Will never exit normally, only with an exception when there is an error
+    in the serial communication.
+    """
+    SkipUntilNewLine(handle)
+    while True:
+        line: bytes = handle.readline(max_line_length)
+        logging.debug("Received line %r", line)
+        if not line.endswith(b"\n"):
+            raise LineOverflowError(line, max_line_length)
+        yield line.rstrip()
+
 def check_incomplete_line(handle: BinaryIO, timeout: float, max_line_length: int):
     '''Attempt to read a line within the given timeout starting from the first received byte.
-       Returns nothing if timeout expires.'''
+       Returns an incomplete line if timeout expires.'''
     line = b""
     end_time = None
     while len(line) < max_line_length:
@@ -60,7 +77,7 @@ def check_incomplete_line(handle: BinaryIO, timeout: float, max_line_length: int
                 return line
             elif  (time.time() >= end_time):
                 logging.warning("Dismissing incomplete line: %r", line)
-                return None # don't return the incomplete line
+                return None # dont return the incomplete line
 
 def SerialLines(handle: BinaryIO, max_line_length: int, timeout: float) -> Generator[bytes, None, None]:
     """A generator that yields lines from a configured serial line.
@@ -69,10 +86,16 @@ def SerialLines(handle: BinaryIO, max_line_length: int, timeout: float) -> Gener
     """
     SkipUntilNewLine(handle)
     while True:
-        # replaced the handle.readline() call with custom function
+        # replaced the handle.readline() call with our custom function
         line: bytes = check_incomplete_line(handle, timeout, max_line_length)
         logging.debug("Received line %r", line)
+        if line is None:
+            logging.warning('Received a None line')
+            continue  # Skip this iteration and move to the next one
         if not line.endswith(b"\n"):
             raise LineOverflowError(line, max_line_length)
         yield line.rstrip()
+
+
+
 
