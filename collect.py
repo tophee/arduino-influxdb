@@ -30,6 +30,14 @@ import influxdb
 import persistent_queue
 import serial_samples
 
+import sched
+import subprocess
+import time
+import os
+
+def restart_script():
+    logging.info("Restarting script...")
+    os._exit(1)  # Force immediate exit
 
 def RetryOnIOError(exception):
     """Returns True if 'exception' is an IOError."""
@@ -55,7 +63,11 @@ def ReadLoop(args, queue: persistent_queue.Queue):
                 lines = serial_fn(handle)
             else:
                 lines = serial_samples.SerialLines(handle, args.max_line_length, 10.0)
+            start_time = time.time()
             for line in lines:
+                # If line does not start with start string
+                if not line.startswith(b'FTX'):
+                   continue
                 try:
                     line = str(line, encoding="UTF-8")
                 except TypeError:
@@ -75,7 +87,7 @@ def ReadLoop(args, queue: persistent_queue.Queue):
     except:
         logging.exception("Error, retrying with backoff")
         raise
-
+        
 
 @retry(wait_exponential_multiplier=1000,
        wait_exponential_max=60000,
@@ -104,7 +116,6 @@ def RunAndDie(fun, *args):
     finally:
         sys.exit(1)
 
-
 def main():
     """Parses the command line arguments and invokes the main loop."""
     parser = argparse.ArgumentParser(
@@ -132,7 +143,7 @@ def main():
                         help='serial device to read from, or a URL accepted '
                         'by serial_for_url()')
     parser.add_argument('-r',
-                        '--baud-rate',
+                         '--baud-rate',
                         type=int,
                         default=9600,
                         help='baud rate of the serial device')
@@ -197,19 +208,40 @@ def main():
 
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
-    with persistent_queue.Queue(
-            args.queue, wal_autocheckpoint=args.wal_autocheckpoint) as queue:
-        reader = threading.Thread(name="read",
-                                  target=RunAndDie,
-                                  args=(ReadLoop, args, queue))
-        writer = threading.Thread(name="write",
-                                  target=RunAndDie,
-                                  args=(WriteLoop, args, queue))
-        reader.start()
-        writer.start()
-        reader.join()
-        writer.join()
 
+    # Create a scheduler and schedule the script to restart in 24 hours
+    scheduler = sched.scheduler(time.time, time.sleep)
+    restart_delay = 24 * 60 * 60  # 24 hours in seconds
+    scheduler.enter(restart_delay, 1, restart_script)
+
+    # Start the scheduler in a separate thread
+    scheduler_thread = threading.Thread(target=scheduler.run)
+    scheduler_thread.start()
+
+    while True:
+        try:
+            with persistent_queue.Queue(
+                    args.queue, wal_autocheckpoint=args.wal_autocheckpoint) as queue:
+                reader = threading.Thread(name="read",
+                                          target=ReadLoop,
+                                          args=(args, queue))
+                writer = threading.Thread(name="write",
+                                          target=WriteLoop,
+                                          args=(args, queue))
+                reader.start()
+                writer.start()
+                reader.join()
+                writer.join()
+        except Exception:
+            logging.exception("Unhandled exception occurred, restarting script...")
+            time.sleep(5)  # Wait a bit before restarting
+            continue
+        break  # Exit the loop if no exceptions occurred
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+        except Exception:
+            logging.exception("Unhandled exception occurred in main(), restarting script...")
+            time.sleep(5)  # Wait a bit before restarting
